@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 
 namespace BFImplementation
 {
@@ -13,85 +14,45 @@ namespace BFImplementation
         Input,
         CondLeft,
         CondRight,
-        Assign
+        Assign,
     }
 
+    [StructLayout(LayoutKind.Auto)]
     public struct OpValue : IEquatable<OpValue>
     {
-        private OpCode opCode;
-        private int data;
+        public OpCode OpCode;
+
+        public int Data;
 
         public OpValue(OpCode opCode, int data)
         {
-            this.opCode = opCode;
-            this.data = data;
+            this.OpCode = opCode;
+            this.Data = data;
         }
 
-        public OpCode OpCode
-        {
-            get { return this.opCode; }
-            set { this.opCode = value; }
-        }
+        public override int GetHashCode() => this.Data + ((int)this.OpCode << 27);
 
-        public int Data
-        {
-            get { return this.data; }
-            set { this.data = value; }
-        }
+        public override bool Equals(object obj) => obj is OpValue other && this.Equals(other);
 
-        public override int GetHashCode()
-        {
-            return this.data + ((int)this.opCode << 27);
-        }
+        public bool Equals(OpValue other) => this.OpCode == other.OpCode && this.Data == other.Data;
 
-        public override bool Equals(object obj)
-        {
-            return obj is OpValue &&
-                this.Equals((OpValue)obj);
-        }
-
-        public bool Equals(OpValue other)
-        {
-            return this.opCode == other.opCode &&
-                this.data == other.data;
-        }
-
-        public override string ToString()
-        {
-            return this.opCode + " " + this.data;
-        }
+        public override string ToString() => this.OpCode + " " + this.Data;
     }
 
     public sealed class Op
     {
-        private OpValue opValue;
+        public OpValue OpValue;
 
-        public Op(OpCode opCode, int data)
-        {
-            this.opValue = new OpValue(opCode, data);
-        }
+        public Op(OpCode opCode, int data) => this.OpValue = new OpValue(opCode, data);
 
-        public OpCode OpCode 
-        {
-            get { return this.opValue.OpCode; }
-        }
+        public OpCode OpCode => this.OpValue.OpCode;
 
         public int Data
         {
-            get { return this.opValue.Data; }
-            set { this.opValue.Data = value; }
+            get => this.OpValue.Data;
+            set => this.OpValue.Data = value;
         }
 
-        public OpValue OpValue
-        {
-            get { return this.opValue; }
-            set { this.opValue = value; }
-        }
-
-        public override string ToString()
-        {
-            return this.opValue.ToString();
-        }
+        public override string ToString() => this.OpValue.ToString();
     }
 }
-

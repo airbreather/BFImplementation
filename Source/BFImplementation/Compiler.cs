@@ -21,8 +21,7 @@ namespace BFImplementation
             List<Op> opList = new List<Op>();
             for (int idx = 0; idx < program.Length; idx++)
             {
-                OpCode opCode;
-                if (!this.validChars.TryGetValue(program[idx], out opCode))
+                if (!this.validChars.TryGetValue(program[idx], out var opCode))
                 {
                     continue;
                 }
@@ -30,34 +29,33 @@ namespace BFImplementation
                 opList.Add(new Op(opCode, 1));
             }
 
-            Op[] ops = this.Optimize(opList);
+            this.Optimize(opList);
+
+            OpValue[] result = new OpValue[opList.Count];
+            for (int i = 0; i < result.Length; i++)
+            {
+                result[i] = opList[i].OpValue;
+            }
 
             Stack<int> leftBraces = new Stack<int>();
-            for (int curr = 0; curr < ops.Length; curr++)
+            for (int curr = 0; curr < result.Length; curr++)
             {
-                if (ops[curr].OpCode == OpCode.CondLeft)
+                if (result[curr].OpCode == OpCode.CondLeft)
                 {
                     leftBraces.Push(curr);
                 }
-                else if (ops[curr].OpCode == OpCode.CondRight)
+                else if (result[curr].OpCode == OpCode.CondRight)
                 {
                     int leftIndex = leftBraces.Pop();
-                    ops[leftIndex].Data = curr;
-                    ops[curr].Data = leftIndex;
+                    result[leftIndex].Data = curr;
+                    result[curr].Data = leftIndex;
                 }
-            }
-
-            OpValue[] result = new OpValue[ops.Length];
-            for (int i = 0; i < result.Length; i++)
-            {
-                result[i].OpCode = ops[i].OpCode;
-                result[i].Data = ops[i].Data;
             }
 
             return result;
         }
 
-        private Op[] Optimize(List<Op> input)
+        private void Optimize(List<Op> input)
         {
             // Condense null-assignments
             CondenseNullAssignment(input);
@@ -67,8 +65,6 @@ namespace BFImplementation
             CondenseRun(input, OpCode.Decrement, OpCode.Increment);
             CondenseRun(input, OpCode.ShiftRight, OpCode.ShiftLeft);
             CondenseRun(input, OpCode.ShiftLeft, OpCode.ShiftRight);
-
-            return input.ToArray();
         }
 
         private void CondenseRun(List<Op> input, OpCode opCodeForward, OpCode opCodeBackward)
@@ -127,7 +123,8 @@ namespace BFImplementation
                 Op curr = input[i];
 
                 if (prev2.OpCode != OpCode.CondLeft ||
-                    prev.OpCode != OpCode.Decrement ||
+                    (prev.OpCode != OpCode.Decrement &&
+                     prev.OpCode != OpCode.Increment)||
                     curr.OpCode != OpCode.CondRight)
                 {
                     prev2 = prev;
@@ -144,4 +141,3 @@ namespace BFImplementation
         }
     }
 }
-

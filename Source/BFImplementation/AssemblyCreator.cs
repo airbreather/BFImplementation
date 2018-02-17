@@ -6,63 +6,77 @@ using Mono.Cecil;
 using Mono.Cecil.Cil;
 
 using Assembly = System.Reflection.Assembly;
+using AssemblyConfigurationAttribute = System.Reflection.AssemblyConfigurationAttribute;
+using ConstructorInfo = System.Reflection.ConstructorInfo;
 using MethodInfo = System.Reflection.MethodInfo;
+
 using BFOpCode = BFImplementation.OpCode;
 
 namespace BFImplementation
 {
     public class AssemblyCreator
     {
-        public MethodInfo Create(OpValue[] prog)
+        private static readonly MethodInfo ConsoleWriteChar = typeof(Console).GetMethod("Write", new[] { typeof(char) });
+        private static readonly MethodInfo ConsoleRead = typeof(Console).GetMethod("Read", Array.Empty<Type>());
+        private static readonly ConstructorInfo CreateAssemblyConfigurationAttribute = typeof(AssemblyConfigurationAttribute).GetConstructor(new[] { typeof(string) });
+        private static readonly Type[] ConsoleWriteOverload = { typeof(char) };
+
+        public unsafe MethodInfo Create(OpValue[] prog)
         {
             const string OutNamespace = "BF";
             const string OutTypeName = "CompiledProgram";
-            const string OutMethodName = "Main";
+            const string OutMethodName = "RunCompiledProgram";
 
             var name = new AssemblyNameDefinition(OutNamespace, new Version(1, 0, 0, 0));
             var asm = AssemblyDefinition.CreateAssembly(name, OutNamespace + ".dll", ModuleKind.Dll);
+            var module = asm.MainModule;
 
-            asm.MainModule.Import(typeof(int));
-            var voidret = asm.MainModule.Import(typeof(void));
+            asm.CustomAttributes.Add(new CustomAttribute(module.ImportReference(CreateAssemblyConfigurationAttribute))
+            {
+                ConstructorArguments =
+                {
+                    new CustomAttributeArgument(module.ImportReference(typeof(string)), "Release"),
+                },
+            });
+
+            var intPtrRef = module.ImportReference(typeof(int*));
+            var voidret = module.ImportReference(typeof(void));
 
             var method = new MethodDefinition(OutMethodName,
-                                              MethodAttributes.Static | MethodAttributes.Public,
+                                              MethodAttributes.Static | MethodAttributes.HideBySig | MethodAttributes.Public,
                                               voidret);
 
-            var arrayVar = new VariableDefinition("array", asm.MainModule.Import(typeof(int[])));
-            var indexVar = new VariableDefinition("idx", asm.MainModule.Import(typeof(int)));
-            
-            method.Body.Variables.Add(arrayVar);
-            method.Body.Variables.Add(indexVar);
+            var ptrParam = new ParameterDefinition("ptr", ParameterAttributes.None, intPtrRef);
+            method.Parameters.Add(ptrParam);
+
+            var ptrVar = new VariableDefinition(intPtrRef);
+
+            method.Body.Variables.Add(ptrVar);
+
+            var consoleWriteChar = module.ImportReference(ConsoleWriteChar);
+            var consoleRead = module.ImportReference(ConsoleRead);
 
             var ip = method.Body.GetILProcessor();
 
-            ip.Emit(OpCodes.Ldc_I4_0);
-            ip.Emit(OpCodes.Stloc, indexVar);
-
-            ip.Emit(OpCodes.Ldc_I4, 300000);
-            ip.Emit(OpCodes.Newarr, asm.MainModule.Import(typeof(int)));
-
-            ip.Emit(OpCodes.Stloc, arrayVar);
+            ip.Emit(OpCodes.Ldarg_0);
+            ip.Emit(OpCodes.Stloc_0);
 
             Dictionary<int, Instruction> braces = new Dictionary<int, Instruction>();
 
             for (int i = 0; i < prog.Length; i++)
             {
-                Emit(ip, asm.MainModule, arrayVar, indexVar, braces, prog, i);
+                Emit(ip, module, consoleWriteChar, consoleRead, braces, prog, i);
             }
 
             ip.Emit(OpCodes.Ret);
 
             var type = new TypeDefinition(OutNamespace,
                                           OutTypeName,
-                                          TypeAttributes.AutoClass | TypeAttributes.Public | TypeAttributes.AnsiClass | TypeAttributes.BeforeFieldInit,
-                                          asm.MainModule.Import(typeof(object)));
+                                          TypeAttributes.AnsiClass | TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed | TypeAttributes.BeforeFieldInit | TypeAttributes.AutoLayout,
+                                          module.ImportReference(typeof(object)));
 
-            asm.MainModule.Types.Add(type);
+            module.Types.Add(type);
             type.Methods.Add(method);
-
-            asm.EntryPoint = method;
 
             byte[] rawAsm;
             using (var ms = new MemoryStream())
@@ -76,73 +90,54 @@ namespace BFImplementation
                             .GetMethod(OutMethodName);
         }
 
-        private static void Emit(ILProcessor ip, ModuleDefinition mod, VariableDefinition arrayVar, VariableDefinition indexVar, Dictionary<int, Instruction> braces, OpValue[] ops, int i)
+        private static void Emit(ILProcessor ip, ModuleDefinition mod, MethodReference consoleWriteChar, MethodReference consoleRead, Dictionary<int, Instruction> braces, OpValue[] ops, int i)
         {
             OpValue op = ops[i];
             switch (op.OpCode)
             {
-                case BFOpCode.Increment:
-                    ip.Emit(OpCodes.Ldloc, arrayVar);
-                    ip.Emit(OpCodes.Ldloc, indexVar);
-                    ip.Emit(OpCodes.Ldloc, arrayVar);
-                    ip.Emit(OpCodes.Ldloc, indexVar);
-                    ip.Emit(OpCodes.Ldelem_I4);
-                    ip.Emit(OpCodes.Ldc_I4, op.Data);
-                    ip.Emit(OpCodes.Add);
-                    ip.Emit(OpCodes.Stelem_I4);
-                    break;
-                    
-                case BFOpCode.Decrement:
-                    ip.Emit(OpCodes.Ldloc, arrayVar);
-                    ip.Emit(OpCodes.Ldloc, indexVar);
-                    ip.Emit(OpCodes.Ldloc, arrayVar);
-                    ip.Emit(OpCodes.Ldloc, indexVar);
-                    ip.Emit(OpCodes.Ldelem_I4);
-                    ip.Emit(OpCodes.Ldc_I4, op.Data);
-                    ip.Emit(OpCodes.Sub);
-                    ip.Emit(OpCodes.Stelem_I4);
+                case BFOpCode.ShiftRight:
+                case BFOpCode.ShiftLeft:
+                    ip.Emit(OpCodes.Ldloc_0);
+                    Emit_Ldc_I4(ip, op.Data);
+                    ip.Emit(OpCodes.Conv_I);
+                    Emit_Ldc_I4(ip, sizeof(int));
+                    ip.Emit(OpCodes.Mul);
+                    ip.Emit(op.OpCode == BFOpCode.ShiftRight ? OpCodes.Add : OpCodes.Sub);
+                    ip.Emit(OpCodes.Stloc_0);
                     break;
 
-                case BFOpCode.ShiftRight:
-                    ip.Emit(OpCodes.Ldloc, indexVar);
-                    ip.Emit(OpCodes.Ldc_I4, op.Data);
-                    ip.Emit(OpCodes.Add);
-                    ip.Emit(OpCodes.Stloc, indexVar);
-                    break;
-                    
-                case BFOpCode.ShiftLeft:
-                    ip.Emit(OpCodes.Ldloc, indexVar);
-                    ip.Emit(OpCodes.Ldc_I4, op.Data);
-                    ip.Emit(OpCodes.Sub);
-                    ip.Emit(OpCodes.Stloc, indexVar);
+                case BFOpCode.Increment:
+                case BFOpCode.Decrement:
+                    ip.Emit(OpCodes.Ldloc_0);
+                    ip.Emit(OpCodes.Dup);
+                    ip.Emit(OpCodes.Ldind_I4);
+                    Emit_Ldc_I4(ip, op.Data);
+                    ip.Emit(op.OpCode == BFOpCode.Increment ? OpCodes.Add : OpCodes.Sub);
+                    ip.Emit(OpCodes.Stind_I4);
                     break;
 
                 case BFOpCode.Output:
-                    ip.Emit(OpCodes.Ldloc, arrayVar);
-                    ip.Emit(OpCodes.Ldloc, indexVar);
-                    ip.Emit(OpCodes.Ldelem_I4);
-                    ip.Emit(OpCodes.Conv_I1);
-                    ip.Emit(OpCodes.Call, mod.Import(typeof(Console).GetMethod("Write", new[] { typeof(char) })));
+                    ip.Emit(OpCodes.Ldloc_0);
+                    ip.Emit(OpCodes.Ldind_I4);
+                    ip.Emit(OpCodes.Conv_U2);
+                    ip.Emit(OpCodes.Call, consoleWriteChar);
                     break;
 
                 case BFOpCode.Input:
-                    ip.Emit(OpCodes.Call, mod.Import(typeof(Console).GetMethod("Read", new Type[0])));
-                    ip.Emit(OpCodes.Ldloc, arrayVar);
-                    ip.Emit(OpCodes.Ldloc, indexVar);
-                    ip.Emit(OpCodes.Ldelem_I4);
-                    ip.Emit(OpCodes.Conv_I1);
+                    ip.Emit(OpCodes.Ldloc_0);
+                    ip.Emit(OpCodes.Call, consoleRead);
+                    ip.Emit(OpCodes.Stind_I4);
                     break;
 
                 case BFOpCode.CondLeft:
-                    var leftB = ip.Create(OpCodes.Ldloc, arrayVar);
+                    var leftB = ip.Create(OpCodes.Ldloc_0);
                     var rightB = ip.Create(OpCodes.Nop);
-                    ip.Append(leftB);
                     braces[i] = leftB;
                     braces[op.Data] = rightB;
-                    ip.Emit(OpCodes.Ldloc, indexVar);
-                    ip.Emit(OpCodes.Ldelem_I4);
+
+                    ip.Append(leftB);
+                    ip.Emit(OpCodes.Ldind_I4);
                     ip.Emit(OpCodes.Brfalse, rightB);
-                    ip.Emit(OpCodes.Nop);
                     break;
 
                 case BFOpCode.CondRight:
@@ -151,13 +146,66 @@ namespace BFImplementation
                     break;
 
                 case BFOpCode.Assign:
-                    ip.Emit(OpCodes.Ldloc, arrayVar);
-                    ip.Emit(OpCodes.Ldloc, indexVar);
-                    ip.Emit(OpCodes.Ldc_I4, op.Data);
-                    ip.Emit(OpCodes.Stelem_I4);
+                    ip.Emit(OpCodes.Ldloc_0);
+                    Emit_Ldc_I4(ip, op.Data);
+                    ip.Emit(OpCodes.Stind_I4);
                     break;
+            }
+
+            void Emit_Ldc_I4(ILProcessor _ip, int data)
+            {
+                switch (data)
+                {
+                    case -1:
+                        _ip.Emit(OpCodes.Ldc_I4_M1);
+                        return;
+
+                    case 0:
+                        _ip.Emit(OpCodes.Ldc_I4_0);
+                        return;
+
+                    case 1:
+                        _ip.Emit(OpCodes.Ldc_I4_1);
+                        return;
+
+                    case 2:
+                        _ip.Emit(OpCodes.Ldc_I4_2);
+                        return;
+
+                    case 3:
+                        _ip.Emit(OpCodes.Ldc_I4_3);
+                        return;
+
+                    case 4:
+                        _ip.Emit(OpCodes.Ldc_I4_4);
+                        return;
+
+                    case 5:
+                        _ip.Emit(OpCodes.Ldc_I4_5);
+                        return;
+
+                    case 6:
+                        _ip.Emit(OpCodes.Ldc_I4_6);
+                        return;
+
+                    case 7:
+                        _ip.Emit(OpCodes.Ldc_I4_7);
+                        return;
+
+                    case 8:
+                        _ip.Emit(OpCodes.Ldc_I4_8);
+                        return;
+                }
+
+                if (data < -128 || data > 127)
+                {
+                    ip.Emit(OpCodes.Ldc_I4, data);
+                }
+                else
+                {
+                    ip.Emit(OpCodes.Ldc_I4_S, unchecked((sbyte)data));
+                }
             }
         }
     }
 }
-
